@@ -1131,12 +1131,13 @@ function renderResult(r, pl) {
       ${ph.evidence_ids && ph.evidence_ids.length ? `<div style="margin-top:10px">${evi(ph.evidence_ids)}</div>` : ""}
     </div>` : ""}
 
+    ${d.summary || (d.strengths || []).length || (d.weaknesses || []).length ? `
     <div class="sec">現状の診断 ・ Diagnosis</div>
     ${d.summary ? `<p class="rsum">${esc(d.summary)}</p>` : ""}
     <div class="rgrid">
       <div class="rcard good"><h4><i>＋</i>活かしたい点</h4>${list(d.strengths)}</div>
       <div class="rcard gap"><h4><i>△</i>伸びしろ</h4>${list(d.weaknesses)}</div>
-    </div>
+    </div>` : ""}
 
     ${hasIns ? `
     <div class="sec">サンプル投稿から学べること ・ Insights</div>
@@ -1146,7 +1147,7 @@ function renderResult(r, pl) {
       ${ins.evidence_ids && ins.evidence_ids.length ? `<div style="margin-top:10px">${evi(ins.evidence_ids)}</div>` : ""}
     </div>` : ""}
 
-    <div class="sec">改善アクション ・ What to do</div>
+    ${(r.improvements || []).length ? `<div class="sec">改善アクション ・ What to do</div>` : ""}
     <div class="acts">${(r.improvements || []).length ? r.improvements.map((a, i) => `
       <div class="act">
         <div class="act-no">${i + 1}</div>
@@ -1156,7 +1157,7 @@ function renderResult(r, pl) {
           ${a.example ? `<div class="act-ex"><small>EXAMPLE</small>${esc(a.example)}</div>` : ""}
           <div class="act-meta">${meter("期待効果", a.impact)}${meter("実施負荷", a.effort)}${evi(a.evidence_ids)}</div>
         </div>
-      </div>`).join("") : '<div class="note">該当なし</div>'}
+      </div>`).join("") : ""}
     </div>
 
     ${rw.text ? `
