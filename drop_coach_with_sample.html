@@ -247,6 +247,7 @@
   .coach-qt{display:flex;gap:10px;align-items:flex-start;font-size:15px;font-weight:700;line-height:1.6;margin-bottom:10px}
   .coach-qt i{font-style:normal;background:var(--rich);color:#fff;font-size:12px;font-weight:900;padding:2px 7px;flex:none}
   .coach-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}
+  mark.blank.now{outline:2px solid var(--rich);outline-offset:1px;font-weight:700}
   mark.mine{background:#dff3e7;color:inherit;padding:0 2px;border-bottom:2px solid #2f8f66}
   .coach-ready{padding:14px;background:var(--rich-soft);font-size:14px;line-height:1.7}
   .coach-ready .hint{margin-top:8px}
@@ -1439,20 +1440,66 @@ function setCoachFromResult(r, pl) {
   if (C.sending > 0) { C.phase = "done"; return; }   // 仕上げ（③）の結果
   C.qs = ((r.viewpoint || {}).questions || []).slice(0, 6);
   C.base = (r.rewrite || {}).text || pl.beforeText || "";
+  C.map = coachMatch(C.qs, C.base);   // 問い → 文面の【 】の対応（並び順ではなく中身で対応させる）
   C.pos = 0; C.filled = {}; C.answers = [];
   C.phase = C.qs.length ? "ask" : "done";
 }
 /** 文面の i 番目の【 】に i 番目の問いの答えを入れる（【 】が足りない分は末尾の行に足す） */
+/**
+ * 問いと文面の【 】を中身で対応させる（v7.1）
+ * 問いは大事な順、【 】は文面の上から順に並ぶため、並び順で対応させると答えがちぐはぐな場所に入る。
+ * ① 【1:…】【Q2 …】のように番号が付いていれば番号で対応
+ * ② 問いの文と【 】のヒントの文字の重なり（2 文字のつながり＋漢字・カタカナ）が大きいものから対応
+ * ③ それでも残った問いと【 】は、並び順で対応
+ * 戻り値：{ 問いの番号: 【 】の番号（対応する【 】が無ければ -1） }
+ */
+function coachMatch(qs, base) {
+  const blanks = (base.match(/【[^】]*】/g) || []).map(b => b.slice(1, -1));
+  const map = {}, usedB = new Set();
+  qs.forEach((_, i) => { map[i] = -1; });
+  const Z = "０１２３４５６７８９", C1 = "①②③④⑤⑥⑦⑧⑨";
+  const numOf = s => {
+    const m = s.match(/^\s*[QqＱｑ]?\s*([0-9０-９①-⑨])\s*[:：.．、)）\s]?/);
+    if (!m) return -1;
+    const c = m[1];
+    const n = /[0-9]/.test(c) ? Number(c) : Z.indexOf(c) >= 0 ? Z.indexOf(c) : C1.indexOf(c) + 1;
+    return n >= 1 && n <= qs.length ? n - 1 : -1;
+  };
+  blanks.forEach((b, bi) => { const q = numOf(b); if (q >= 0 && map[q] < 0) { map[q] = bi; usedB.add(bi); } });
+  const norm = s => String(s).replace(/^\s*[QqＱｑ]?\s*[0-9０-９①-⑨]\s*[:：.．、)）]?/, "").replace(/[\s、。，．！？!?「」『』（）()・:：…〜~ー-]/g, "");
+  const grams = s => {
+    const n = norm(s), g = new Set();
+    for (let i = 0; i < n.length - 1; i++) g.add(n.slice(i, i + 2));
+    for (const ch of n) if (/[一-鿿゠-ヿA-Za-z0-9]/.test(ch)) g.add(ch);
+    return g;
+  };
+  const QG = qs.map(grams), BG = blanks.map(grams), pairs = [];
+  QG.forEach((qg, qi) => BG.forEach((bg, bi) => {
+    if (!bg.size) return;
+    let hit = 0; bg.forEach(x => { if (qg.has(x)) hit++; });
+    if (hit) pairs.push({ qi, bi, s: hit / bg.size + hit / 100 });
+  }));
+  pairs.sort((a, b) => b.s - a.s).forEach(p => {
+    if (map[p.qi] < 0 && !usedB.has(p.bi)) { map[p.qi] = p.bi; usedB.add(p.bi); }
+  });
+  const restB = blanks.map((_, i) => i).filter(i => !usedB.has(i));
+  qs.forEach((_, qi) => { if (map[qi] < 0 && restB.length) map[qi] = restB.shift(); });
+  return map;
+}
+/** 文面の【 】に、対応する問いの答えを入れる（対応する【 】が無い答えは末尾の行に足す）。今の問いの【 】には印を付ける */
 function coachLocalSegs() {
-  const C = S.coach;
+  const C = S.coach, owner = {};
+  Object.keys(C.map || {}).forEach(q => { if (C.map[q] >= 0) owner[C.map[q]] = Number(q); });
+  const cur = C.phase === "ask" ? C.pos : -1;
   let bi = 0;
   const out = C.base.split(/(【[^】]*】)/).map(p => {
     if (!/^【[^】]*】$/.test(p)) return { t: p };
-    const a = C.filled[bi++];
-    return a != null ? { t: a, mine: true } : { t: p };
+    const q = owner[bi++];
+    if (q != null && C.filled[q] != null) return { t: C.filled[q], mine: true };
+    return { t: p, now: q != null && q === cur };
   });
-  Object.keys(C.filled).map(Number).filter(i => i >= bi).sort((a, b) => a - b)
-    .forEach(i => out.push({ t: "\n" }, { t: C.filled[i], mine: true }));
+  Object.keys(C.filled).map(Number).filter(q => !((C.map || {})[q] >= 0)).sort((a, b) => a - b)
+    .forEach(q => out.push({ t: "\n" }, { t: C.filled[q], mine: true }));
   return out;
 }
 function renderCoach() {
@@ -1462,7 +1509,7 @@ function renderCoach() {
   const d = r.diagnosis || {};
   const segs = C.phase === "done" ? [{ t: (r.rewrite || {}).text || pl.beforeText || "" }] : coachLocalSegs();
   const plain = segs.map(x => x.t).join("");
-  const html = segs.map(x => x.mine ? `<mark class="mine">${esc(x.t)}</mark>` : esc(x.t).replace(/【[^】]*】/g, m => `<mark class="blank">${m}</mark>`)).join("");
+  const html = segs.map(x => x.mine ? `<mark class="mine">${esc(x.t)}</mark>` : x.now ? `<mark class="blank now">${esc(x.t)}</mark>` : esc(x.t).replace(/【[^】]*】/g, m => `<mark class="blank">${m}</mark>`)).join("");
   const hasBlank = /【[^】]*】/.test(plain);
   const q = C.phase === "ask" ? C.qs[C.pos] : "";
   const answered = C.answers.filter(x => !x.skip).length;
