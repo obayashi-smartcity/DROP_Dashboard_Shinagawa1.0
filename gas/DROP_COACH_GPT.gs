@@ -75,6 +75,10 @@
  *   - viewpoint.summary の先頭に「分類：X ラベル。」を GAS 側で付ける（ログで振り分けに使う）
  *   - D（その他：A〜C に当てはまらない）を追加
  *
+ * ■ v7 の変更（2026/11/12）
+ *   - 分類を KPI①②③判定に変更（A=①挑戦／B=②属性横断／C=③信頼・心理的安全性／D=該当なし）。CATEGORIES の label・direction のみ変更
+ *   - プロンプト（drop_coach_common.md）側で 5W1H の点検と KPI 判定を行う。出力スキーマ・処理は変更なし
+ *
  * ■ 貼り付け時の注意
  *   貼り付け後に「&g」+「t;」「&l」+「t;」「<a」+「 href」で検索し 0 件であることを確認すること。
  */
@@ -114,12 +118,12 @@ const KEY = { FAIL: 'coach_auth_fail', PROMPT: 'coach_prompt_v6_', TOKEN: 'coach
 const LIMITS = { STRENGTHS: 3, WEAKNESSES: 3, TRAITS: 3, TIPS: 3, EVIDENCE: 3, IMPROVEMENTS: 4, POINTS: 3, CAVEATS: 2, FOUND: 3, QUESTIONS: 3 };
 const LEVELS = ['低', '中', '高'];
 const MATCHES = ['一致', '一部一致', '不一致'];
-/* v6.1：投稿の 3 パターン分類（企業 WS 素案 p.9） */
+/* v7：コクヨKPI（3つのカルチャー変革）による判定。記号は出力スキーマ A〜D のまま */
 const CATEGORIES = {
-  A: { label: '心が動いた', direction: '「自分なら何をやってみたい？」方向へ' },
-  B: { label: '人とつながった', direction: '「誰と何でつながった？」方向へ' },
-  C: { label: '会社の印象', direction: '「その様子から会社をどう感じた？」方向へ' },
-  D: { label: 'その他', direction: '何を・誰と・どのように・なぜ を明確に' }
+  A: { label: '①挑戦', direction: '「誰の何に刺激を受けた？自分なら何をやってみたい？」方向へ' },
+  B: { label: '②属性横断', direction: '「どんな人と、何で通じ合った？その後どうしたい？」方向へ' },
+  C: { label: '③信頼・心理的安全性', direction: '「職場の誰の、どんな一面？職場でどうしたくなった？」方向へ' },
+  D: { label: '該当なし', direction: 'まず「何を・なぜ」を補い、いちばん近いKPIの芽を1つ聞く' }
 };
 const MODES = {
   posted: '投稿済み（DROP に投稿済みの投稿を改善する。T の数値は参考情報）',

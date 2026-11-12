@@ -524,15 +524,16 @@
         </div>
         <div class="panel">
           <div class="lbl"><label for="dText">コメント（投稿本文）</label><span>必須</span></div>
-          <textarea class="ta" id="dText" rows="6" maxlength="300" enterkeyhint="done" placeholder="例）螺旋階段を真下から見上げたら、手すりの曲線が最上階まで途切れずに続いていて、思わず足が止まりました。"></textarea>
+          <textarea class="ta" id="dText" rows="6" maxlength="300" enterkeyhint="done" placeholder="例）かわいい豆本、買っちゃった（下書きのままで大丈夫です。5行・50〜70字くらいが目安）"></textarea>
           <div class="cnt" id="dTextCnt">0 / 300</div>
-          <div class="lbl" style="margin-top:10px"><label for="dName">表示名</label><span>任意・施設アカウントの場合など</span></div>
-          <input type="text" class="inp" id="dName" maxlength="40" autocomplete="off" placeholder="例：ABC本社ビル" />
+          <div class="lbl" style="margin-top:10px"><label for="dName">表示名</label><span>任意・DROP で使うニックネームなど</span></div>
+          <input type="text" class="inp" id="dName" maxlength="40" autocomplete="off" placeholder="例：しながわ太郎" />
           <div class="guide"><b>AI はこの順でチェックします</b>
             <ol>
-              <li>コメントに<b>あなた自身の視点・気づき</b>があるか（最優先）</li>
-              <li>画像がその視点・気づきと<b>一致しているか</b></li>
-              <li>サンプル投稿と比べた写真・書き方など</li>
+              <li><b>何を見て・なぜ心に残ったか</b>（誰と・どう変わったかも）が、あなたの言葉で書けているか（最優先）</li>
+              <li>その体験が<b>「やってみたい」「人とのつながり」「職場での関係」</b>のどれに近いか</li>
+              <li>画像がコメントと<b>合っているか</b></li>
+              <li>サンプル投稿（運営が作った模範投稿）と比べた書き方</li>
             </ol>
           </div>
           <div class="hint">入力内容はこの端末のブラウザに一時保存されます（画像はタブを閉じると消えます）。</div>
@@ -580,7 +581,7 @@
           <div class="fold-body">
             <div class="lbl">よく使う指示<span>タップで追加／解除</span></div>
             <div class="presets" id="presets"></div>
-            <textarea class="ta" id="instr" rows="5" maxlength="400" placeholder="例）ガイドツアーへの誘導を意識した文章にしてください。絵文字は使わないでください。"></textarea>
+            <textarea class="ta" id="instr" rows="5" maxlength="400" placeholder="例）問いはやさしい言葉で2つまでにしてください。絵文字は使わないでください。"></textarea>
             <div class="cnt" id="instrCnt">0 / 400</div>
             <div class="hint">入力内容はこのブラウザに保存され、プロンプトに追記されます。次に実行したときに反映されます<span class="pc">（入力欄で <kbd>Ctrl</kbd>+<kbd>Enter</kbd> でも実行）</span>。</div>
           </div>
@@ -687,11 +688,11 @@ const CONFIG = {
   REF_N: 3, REF_N_MIN: 1, REF_N_MAX: 10,   // ランダムに並べるサンプル投稿の件数（サンプル総数が上限）
   SEND_NAME: true,          // 表示名も送る
   EXCLUDE: /^[\s　]*(テスト[\s　]*)+$/,
-  PRESETS: ["改善後の本文例を必ず出す", "絵文字を使わない", "120字以内にまとめる", "ガイドツアーへ誘導する"],
+  PRESETS: ["改善後の本文例を必ず出す", "絵文字を使わない", "5行・70字以内にまとめる", "B面（仕事以外の好き）が伝わるようにする"],
   DRAFT_PREVIEW_EDGE: 1280, // 画面プレビュー用に縮小するときの長辺(px)（AI には IMG_MAX_EDGE で送る）
   DRAFT_MAX_MB: 30,         // 選べる画像ファイルの上限(MB)
   GOAL: { type: "other", label: "サンプル投稿を参考に投稿を改善",
-          note: "サンプル投稿（PV・いいねによらずランダムに抽出）と比べて、本文の視点・気づきと画像を改善する" },
+          note: "運営作成の模範投稿（サンプル投稿）と比べて、本文の書き方（何を・なぜ・誰と・どう変わったか）と画像を改善する" },
   KEYS: { TOKEN: "dropCoachToken", LOG_TOKEN: "dropCoachLogToken", NAME: "dropCoachName", PW: "dropCoachPw",
           PREFS: "dropCoach_withSample_Prefs", DRAFT: "dropCoachDraft", DRAFT_IMG: "dropCoachDraftImg" }
 };
@@ -1117,7 +1118,7 @@ function buildPayload() {
     if (S.sendImages && r.p.thumb && i < CONFIG.IMG_REFS_MAX) o.image = r.p.thumb;
     return o;
   });
-  const context = { event: EVENT, sample_total: pool.length, ref_basis: "サンプル投稿からランダムに抽出（PV・いいねは使わない）", ref_n: references.length };
+  const context = { event: EVENT, sample_total: pool.length, ref_basis: "運営作成の模範投稿（投稿例集 v4）からランダムに抽出", ref_n: references.length };
   // 入力内容：数値は無く、本文・表示名・アップロード画像（縮小済み data URL）だけを送る
   const target = { id: "T", text: oneLine(p.s).slice(0, CONFIG.MAX_TEXT) };
   if (CONFIG.SEND_NAME && p.n) target.name = p.n;
