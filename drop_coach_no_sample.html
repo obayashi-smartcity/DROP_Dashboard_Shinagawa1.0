@@ -247,6 +247,9 @@
   .coach-qt{display:flex;gap:10px;align-items:flex-start;font-size:15px;font-weight:700;line-height:1.6;margin-bottom:10px}
   .coach-qt i{font-style:normal;background:var(--rich);color:#fff;font-size:12px;font-weight:900;padding:2px 7px;flex:none}
   .coach-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}
+  mark.mine{background:#dff3e7;color:inherit;padding:0 2px;border-bottom:2px solid #2f8f66}
+  .coach-ready{padding:14px;background:var(--rich-soft);font-size:14px;line-height:1.7}
+  .coach-ready .hint{margin-top:8px}
   .coach-done{font-size:14px;font-weight:700;padding:12px 14px;background:#eef8f2;border-left:4px solid #2f8f66}
   .coach-log{margin-top:12px;font-size:12.5px;color:var(--muted)}
   .coach-log summary{cursor:pointer;font-weight:700}
@@ -726,7 +729,7 @@ const S = {
   draft: { text: "", name: "", img: "", imgAi: "", w: 0, h: 0, sig: "" },
   instr: "", sendImages: CONFIG.SEND_IMAGES,
   busy: false, lastKey: null, idMap: {}, pendingForce: false, timer: null,
-  coach: { answers: [], queue: [], last: null }
+  coach: { answers: [], qs: [], pos: 0, filled: {}, base: "", phase: "", sending: 0, last: null }
 };
 
 /* ---------- 分析対象（T）：入力した下書き ---------- */
@@ -1039,6 +1042,7 @@ async function run(force) {
   }
   if (!canAnalyze()) { status("Step 1 でコメントを入力してください", "error"); return; }
   const pl = buildPayload();
+  pl.answers = coachAnswersToSend(); S.coach.sending = pl.answers.length;   // 仕上げのときだけ回答を送る
   S.busy = true; syncButtons();
   $("result").classList.add("loading");
   const t0 = Date.now();
@@ -1047,7 +1051,7 @@ async function run(force) {
   status(`<span class="spin"></span><span>AI が${withImg ? "画像と本文を" : ""}解析して改善案を作成しています… <b id="sec">0</b> 秒</span>`);
   S.timer = setInterval(() => { const s = $("sec"); if (s) s.textContent = Math.floor((Date.now() - t0) / 1000); }, 250);
   const seq = S.runSeq = (S.runSeq || 0) + 1;
-  const res = await post({ action: "coach", token: getToken(CONFIG.KEYS.TOKEN), variant: pl.variant, mode: pl.mode, goal: pl.goal, context: pl.context, target: pl.target, references: pl.references, instructions: pl.instructions, answers: S.coach.answers.map(x => ({ q: x.q, a: x.a })), force: !!force }, CONFIG.GAS_URL);
+  const res = await post({ action: "coach", token: getToken(CONFIG.KEYS.TOKEN), variant: pl.variant, mode: pl.mode, goal: pl.goal, context: pl.context, target: pl.target, references: pl.references, instructions: pl.instructions, answers: pl.answers, force: !!force }, CONFIG.GAS_URL);
   clearInterval(S.timer); S.busy = false;
   syncButtons(); $("result").classList.remove("loading");
   const sec = ((Date.now() - t0) / 1000).toFixed(1);
@@ -1092,7 +1096,7 @@ async function sendLog(pl, res, sec, seq) {
     target_id: "",
     target_text: pl.target.text,
     ref_ids: pl.references.map(r => pl.idMap[r.id]),
-    instructions: [pl.instructions, S.coach.answers.length ? "［コーチへの回答］\n" + coachAnswersText(S.coach.answers) : ""].filter(Boolean).join("\n"),
+    instructions: [pl.instructions, (pl.answers || []).length ? "［コーチへの回答］\n" + coachAnswersText(pl.answers) : ""].filter(Boolean).join("\n"),
     status: res.ok ? "OK" : (res.code || "ERROR"),
     error: res.ok ? "" : (res.message || ""),
     model: res.model || "", prompt_version: res.prompt_version || "",
@@ -1142,7 +1146,7 @@ function renderResult(r, pl) {
   const blanks = /【[^】]*】/g;   // 書き換え例の「投稿者が自分で埋める空欄」
   const rwHtml = esc(rw.text || "").replace(blanks, m => `<mark class="blank">${m}</mark>`);
   const hasIns = !!ins.summary || (ins.traits || []).length;
-  S.coach.last = { r, pl }; S.coach.queue = ((r.viewpoint || {}).questions || []).slice();
+  setCoachFromResult(r, pl);
   $("result").innerHTML = `<div id="coachBox"></div>
     <details class="more"><summary>詳しい診断を見る（分類・写真・改善アクションなど）</summary>
     <div class="r-meta">参考投稿なし（入力内容のみで分析）</div>
@@ -1221,78 +1225,118 @@ function renderResult(r, pl) {
 }
 
 /* =====================================================================
-   ステップ形式のコーチ（v7.1）
-   - 「コーチを始める」で 1 回目を分析 → 問いが 1 つずつ表示される
-   - 回答欄に答えて「答えて文面を更新」→ これまでの問いと回答（answers）を付けて再分析し、文面を更新する
-   - 「この問いはとばす」は AI を呼ばずに次の問いへ（次の分析時に「とばした」ことを AI に伝える）
-   - answers は GAS（v7.1 以降）がプロンプトの {{ANSWERS}} に差し込む
+   ステップ形式のコーチ（v7.1）— AI の分析は 1 人 2 回まで
+   ① 「コーチを始める」：初回の分析。問い（最大 3）と、問いと同じ順番の【 】入りの文面が返る
+   ② 問いに 1 つずつ答える：答えは画面で文面の【 】に入れる（AI は呼ばない）。とばすこともできる
+   ③ 「AI で文面を仕上げる」：これまでの問いと回答（answers）を付けて 1 回だけ再分析し、5 行に整える
+   ※ answers は GAS（v7.1 以降）がプロンプトの {{ANSWERS}} に差し込む
 ===================================================================== */
-function resetCoach() { S.coach.answers = []; S.coach.queue = []; }
+function resetCoach() { Object.assign(S.coach, { answers: [], qs: [], pos: 0, filled: {}, base: "", phase: "", sending: 0 }); }
 function coachAnswersText(list) {
   return (list || []).map((x, i) => `Q${i + 1}: ${x.q}\nA${i + 1}: ${x.a}`).join("\n");
+}
+/** 仕上げ（③）のときだけ回答を送る。初回・やり直しは送らない */
+function coachAnswersToSend() {
+  const C = S.coach;
+  return C.phase === "ready" || C.phase === "done" ? C.answers.map(x => ({ q: x.q, a: x.a })) : [];
+}
+function setCoachFromResult(r, pl) {
+  const C = S.coach;
+  C.last = { r, pl };
+  if (C.sending > 0) { C.phase = "done"; return; }   // 仕上げ（③）の結果
+  C.qs = ((r.viewpoint || {}).questions || []).slice(0, 3);
+  C.base = (r.rewrite || {}).text || pl.beforeText || "";
+  C.pos = 0; C.filled = {}; C.answers = [];
+  C.phase = C.qs.length ? "ask" : "done";
+}
+/** 文面の i 番目の【 】に i 番目の問いの答えを入れる（【 】が足りない分は末尾の行に足す） */
+function coachLocalSegs() {
+  const C = S.coach;
+  let bi = 0;
+  const out = C.base.split(/(【[^】]*】)/).map(p => {
+    if (!/^【[^】]*】$/.test(p)) return { t: p };
+    const a = C.filled[bi++];
+    return a != null ? { t: a, mine: true } : { t: p };
+  });
+  Object.keys(C.filled).map(Number).filter(i => i >= bi).sort((a, b) => a - b)
+    .forEach(i => out.push({ t: "\n" }, { t: C.filled[i], mine: true }));
+  return out;
 }
 function renderCoach() {
   const box = $("coachBox"), C = S.coach;
   if (!box || !C.last) return;
   const { r, pl } = C.last;
-  const rw = r.rewrite || {}, d = r.diagnosis || {};
-  const text = rw.text || pl.beforeText || "";
-  const q = C.queue[0] || "";
-  const hasBlank = /【[^】]*】/.test(text);
-  const html = esc(text).replace(/【[^】]*】/g, m => `<mark class="blank">${m}</mark>`);
+  const d = r.diagnosis || {};
+  const segs = C.phase === "done" ? [{ t: (r.rewrite || {}).text || pl.beforeText || "" }] : coachLocalSegs();
+  const plain = segs.map(x => x.t).join("");
+  const html = segs.map(x => x.mine ? `<mark class="mine">${esc(x.t)}</mark>` : esc(x.t).replace(/【[^】]*】/g, m => `<mark class="blank">${m}</mark>`)).join("");
+  const hasBlank = /【[^】]*】/.test(plain);
+  const q = C.phase === "ask" ? C.qs[C.pos] : "";
+  const answered = C.answers.filter(x => !x.skip).length;
   // 診断の先頭「誰△ 何○（写真） なぜ× …」から 5W1H のチェック状況を取り出す
   const W = [["何", "何を"], ["なぜ", "なぜ"], ["誰", "誰と"], ["どう", "どう変わった"], ["いつ", "いつ"], ["どこ", "どこで"]];
   const mk = {};
   String(d.summary || "").replace(/(なぜ|何|誰|どう|いつ|どこ)\s*([○△×])(（写真）)?/g, (m, k, v, ph) => { if (!(k in mk)) mk[k] = { v, ph: !!ph }; return m; });
   const CLS = { "○": "ok", "△": "mid", "×": "ng" };
   const chips = W.filter(([k]) => mk[k]).map(([k, lb]) => `<span class="w5c ${CLS[mk[k].v]}">${lb}<b>${mk[k].v}</b>${mk[k].ph ? "<em>写真</em>" : ""}</span>`).join("");
-  const answered = C.answers.filter(x => !x.skip).length;
+  const polished = C.phase === "done" && C.sending > 0;
+  const step = C.phase === "ask" ? `STEP ${C.pos + 1} / ${C.qs.length}` : C.phase === "ready" ? "仕上げ" : "できあがり";
+  const title = C.phase === "ask" ? "問いに答えると、文面の【 】が埋まっていきます"
+    : C.phase === "ready" ? "答えた言葉で、文面を整えましょう"
+    : polished ? "AI があなたの言葉で文面を整えました" : "診断の結果";
   box.innerHTML = `
     <div class="coach">
-      <div class="coach-hd"><span class="coach-step">STEP ${C.answers.length + 1}</span><b>${q ? "問いに答えて、文面を育てましょう" : "仕上げ"}</b></div>
-      ${r.headline ? `<div class="coach-head">${esc(r.headline)}</div>` : ""}
-      ${chips ? `<div class="w5">${chips}</div>` : ""}
+      <div class="coach-hd"><span class="coach-step">${step}</span><b>${title}</b></div>
+      ${r.headline && C.phase !== "ready" ? `<div class="coach-head">${esc(r.headline)}</div>` : ""}
+      ${chips && (C.phase === "done" || !C.answers.length) ? `<div class="w5">${chips}</div>` : ""}
       <div class="coach-text">
-        <small>今の文面${answered ? `（あなたの回答 ${answered} 件を反映）` : ""}<button type="button" class="copy" id="coachCopy">コピー</button></small>
+        <small>今の文面${answered ? `（あなたの答え ${answered} 件を反映）` : ""}<button type="button" class="copy" id="coachCopy">コピー</button></small>
         <p>${html}</p>
-        ${hasBlank ? `<div class="rw-hint">※ 黄色の【 】は、問いに答えると埋まります（自分で書き換えても大丈夫です）。</div>` : ""}
+        ${hasBlank ? `<div class="rw-hint">※ 黄色の【 】は${C.phase === "ask" ? "、問いに答えると埋まります" : "、自分の言葉で書き換えてください"}。緑はあなたの答えです。</div>` : answered && C.phase !== "done" ? `<div class="rw-hint">※ 緑はあなたの答えです。</div>` : ""}
       </div>
-      ${q ? `
+      ${C.phase === "ask" ? `
       <div class="coach-q">
-        <div class="coach-qt"><i>Q</i><span>${esc(q)}</span></div>
-        <textarea class="ta" id="coachAns" rows="3" maxlength="150" placeholder="思ったままの言葉で、短くて大丈夫です（Ctrl+Enter で送信）"></textarea>
+        <div class="coach-qt"><i>Q${C.pos + 1}</i><span>${esc(q)}</span></div>
+        <textarea class="ta" id="coachAns" rows="2" maxlength="150" placeholder="思ったままの言葉で、短くて大丈夫です（Ctrl+Enter で入れる）"></textarea>
         <div class="coach-acts">
-          <button type="button" class="btn" id="coachSend">答えて文面を更新</button>
+          <button type="button" class="btn" id="coachSend">答えを文面に入れる</button>
           <button type="button" class="btn ghost sm" id="coachSkip">この問いはとばす</button>
         </div>
+      </div>` : C.phase === "ready" ? `
+      <div class="coach-ready">
+        <div>${answered ? "答えた言葉を使って、AI が 5 行の文面に整えます（AI の分析はこれが最後の 1 回です）。" : "問いをすべてとばしました。答え直すか、このまま「コピー」して投稿できます。"}</div>
+        <div class="coach-acts">
+          ${answered ? `<button type="button" class="btn" id="coachPolish">AI で文面を仕上げる</button>` : ""}
+          <button type="button" class="btn ghost sm" id="coachRedo">答え直す</button>
+        </div>
+        ${answered ? `<div class="hint">このままでよければ、仕上げずに「コピー」して投稿しても大丈夫です。</div>` : ""}
       </div>` : `
-      <div class="coach-done">${hasBlank ? "問いはここまでです。【 】を自分の言葉で埋めて仕上げましょう。" : "できあがりです！「コピー」して DROP に投稿しましょう。"}</div>`}
-      ${C.answers.length ? `<details class="coach-log"><summary>これまでの回答（${C.answers.length}）</summary>${C.answers.map((x, i) => `<div><b>Q${i + 1}</b>${esc(x.q)}<br><b>A</b>${esc(x.a)}</div>`).join("")}</details>` : ""}
+      <div class="coach-done">${hasBlank ? "【 】の部分を自分の言葉で埋めて仕上げましょう。" : "できあがりです！「コピー」して DROP に投稿しましょう。"}</div>`}
+      ${C.answers.length ? `<details class="coach-log"${C.phase === "done" ? "" : " open"}><summary>これまでの答え（${C.answers.length}）</summary>${C.answers.map((x, i) => `<div><b>Q${i + 1}</b>${esc(x.q)}<br><b>A</b>${esc(x.a)}</div>`).join("")}</details>` : ""}
     </div>`;
   const cp = $("coachCopy");
   cp.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(text); cp.textContent = "コピーしました"; }
+    try { await navigator.clipboard.writeText(plain); cp.textContent = "コピーしました"; }
     catch (e) { cp.textContent = "コピー失敗"; }
     setTimeout(() => (cp.textContent = "コピー"), 1600);
   });
-  if (!q) return;
-  const send = () => {
-    if (S.busy) return;
-    const a = $("coachAns").value.replace(/\s+/g, " ").trim();
-    if (!a) { $("coachAns").focus(); return; }
-    // 送信に失敗して同じ問いにもう一度答えた場合は、回答を置き換える
-    const last = C.answers[C.answers.length - 1];
-    if (last && last.q === q && !last.skip) last.a = a; else C.answers.push({ q, a });
-    S.retried = false; run(false);
-  };
-  $("coachSend").addEventListener("click", send);
-  $("coachAns").addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } });
-  $("coachSkip").addEventListener("click", () => {
-    if (S.busy) return;
-    C.answers.push({ q, a: "（とばした）", skip: true });
-    C.queue.shift();
-    renderCoach();
-  });
+  const next = () => { C.pos++; if (C.pos >= C.qs.length) C.phase = "ready"; renderCoach(); const t = $("coachAns"); if (t) t.focus({ preventScroll: true }); };
+  if (C.phase === "ask") {
+    const put = () => {
+      const a = $("coachAns").value.replace(/\s+/g, " ").trim();
+      if (!a) { $("coachAns").focus(); return; }
+      C.filled[C.pos] = a; C.answers.push({ q, a }); next();
+    };
+    $("coachSend").addEventListener("click", put);
+    $("coachAns").addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); put(); } });
+    $("coachSkip").addEventListener("click", () => { C.answers.push({ q, a: "（とばした）", skip: true }); next(); });
+    $("coachAns").focus({ preventScroll: true });
+  }
+  if (C.phase === "ready") {
+    const pb = $("coachPolish");
+    if (pb) pb.addEventListener("click", () => { if (S.busy) return; S.retried = false; run(false); });
+    $("coachRedo").addEventListener("click", () => { C.pos = 0; C.filled = {}; C.answers = []; C.phase = "ask"; renderCoach(); });
+  }
 }
 
 /* 条件が表示中の結果と違えば知らせる（自動実行はしない） */
