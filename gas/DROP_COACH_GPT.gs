@@ -34,10 +34,10 @@
  *   必須
  *     APP_PASSWORD        … 画面で入力させるパスワード
  *     AZURE_API_KEY_LUNA  … Azure OpenAI の API キー（※リポジトリには絶対に書かない）
- *     PROMPT_URL          … プロンプト（drop_coach_prompt.md）の raw URL（従来版・variant 未指定時）
- *   variant 用（未設定なら PROMPT_URL を使う）
- *     PROMPT_URL_WITH_SAMPLE … prompt/drop_coach_prompt_with_sample.md の raw URL
- *     PROMPT_URL_NO_SAMPLE   … prompt/drop_coach_prompt_no_sample.md の raw URL
+ *     PROMPT_URL_WITH_SAMPLE … prompt/drop_coach_with_sample.md の raw URL
+ *     PROMPT_URL_NO_SAMPLE   … prompt/drop_coach_no_sample.md の raw URL
+ *   任意
+ *     PROMPT_URL_COMMON   … prompt/drop_coach_common.md の raw URL（未設定なら種類別ファイルと同じフォルダの drop_coach_common.md）
  *   任意（括弧内は既定値）
  *     REASONING_EFFORT (none) / MAX_OUTPUT_TOKENS (3000) / TOKEN_TTL_SEC (21600)
  *     RESULT_CACHE_SEC (21600) / PROMPT_CACHE_SEC (300) / DAILY_LIMIT (100) / MAX_FAILS (30)
@@ -64,6 +64,11 @@
  *     no_sample   … drop_coach_no_sample.html。T（下書き）だけで分析。references は空でよい
  *   - variant 指定時は PV・いいね・順位を一切使わない（goal の pv/like 判定・「上位投稿」前提をしない）
  *   - プロンプトは variant ごとに切替：PROMPT_URL_WITH_SAMPLE / PROMPT_URL_NO_SAMPLE（未設定なら PROMPT_URL）
+ *
+ * ■ v6 の変更（プロンプトを共通部分と種類別に分割）
+ *   - プロンプトを 3 ファイルに分割：drop_coach_common.md（共通）＋ drop_coach_no_sample.md / drop_coach_with_sample.md（種類別）
+ *     SYSTEM は「共通 → 種類別」の順につなげ、共通の USER（出力内容）は種類別 USER の {{COMMON}} の位置に差し込む（無ければ末尾）
+ *   - variant（with_sample / no_sample）を必須にした。variant の無い従来版（posted モード・PROMPT_URL）は廃止
  *
  * ■ 貼り付け時の注意
  *   貼り付け後に「&g」+「t;」「&l」+「t;」「<a」+「 href」で検索し 0 件であることを確認すること。
@@ -100,7 +105,7 @@ const DEFAULTS = {
 };
 const CACHE_MAX_SEC = 21600;
 const FAIL_WINDOW_SEC = 900;
-const KEY = { FAIL: 'coach_auth_fail', PROMPT: 'coach_prompt_v5_', TOKEN: 'coach_tok_', RESULT: 'coach_res5_', QUOTA: 'coach_count_' };
+const KEY = { FAIL: 'coach_auth_fail', PROMPT: 'coach_prompt_v6_', TOKEN: 'coach_tok_', RESULT: 'coach_res5_', QUOTA: 'coach_count_' };
 const LIMITS = { STRENGTHS: 3, WEAKNESSES: 3, TRAITS: 3, TIPS: 3, EVIDENCE: 3, IMPROVEMENTS: 4, POINTS: 3, CAVEATS: 2, FOUND: 3, QUESTIONS: 3 };
 const LEVELS = ['低', '中', '高'];
 const MATCHES = ['一致', '一部一致', '不一致'];
@@ -162,7 +167,7 @@ function doPost(e) {
   }
 }
 function doGet() {
-  return json_({ ok: true, service: 'drop-coach-ai', version: 5, modes: Object.keys(MODES), variants: Object.keys(VARIANTS), images: boolProp_('ENABLE_IMAGES'), time: new Date().toISOString() });
+  return json_({ ok: true, service: 'drop-coach-ai', version: 6, modes: Object.keys(MODES), variants: Object.keys(VARIANTS), images: boolProp_('ENABLE_IMAGES'), time: new Date().toISOString() });
 }
 
 /* ============================ ログイン ============================ */
@@ -202,6 +207,7 @@ function handleCoach_(req) {
 
   const variant = VARIANT_CFG_(req.variant) ? String(req.variant) : '';
   const vcfg = VARIANT_CFG_(variant);
+  if (!vcfg) throw new AppError('BAD_REQUEST', 'variant（' + Object.keys(VARIANTS).join(' / ') + '）を指定してください');
   // variant 指定時は常に下書き（draft）扱い。PV・いいねは使わない
   const mode = vcfg || req.mode === 'draft' ? 'draft' : 'posted';
   const goal = vcfg ? sanitizeVariantGoal_(req.goal, vcfg) : sanitizeGoal_(req.goal);
@@ -579,37 +585,52 @@ function normalizeResult_(data, validIds, imageIds) {
 /* ============================ プロンプト ============================ */
 function loadPrompt_(variant) {
   const vcfg = VARIANT_CFG_(variant);
-  const propName = vcfg && prop_(vcfg.promptProp) ? vcfg.promptProp : 'PROMPT_URL';
-  const cacheKey = KEY.PROMPT + (vcfg && propName !== 'PROMPT_URL' ? variant : 'default');
+  if (!vcfg) throw new AppError('BAD_REQUEST', 'variant（' + Object.keys(VARIANTS).join(' / ') + '）を指定してください');
+  const cacheKey = KEY.PROMPT + variant;
   const cache = CacheService.getScriptCache();
   const hit = cache.get(cacheKey);
   if (hit) return JSON.parse(hit);
-  const url = normalizePromptUrl_(prop_(propName));
+  const variantUrl = normalizePromptUrl_(prop_(vcfg.promptProp), vcfg.promptProp);
+  const commonUrl = prop_('PROMPT_URL_COMMON')
+    ? normalizePromptUrl_(prop_('PROMPT_URL_COMMON'), 'PROMPT_URL_COMMON')
+    : variantUrl.replace(/[^/]*$/, 'drop_coach_common.md');
+  const common = parsePrompt_(fetchPromptText_(commonUrl, 'PROMPT_URL_COMMON'));
+  const own = parsePrompt_(fetchPromptText_(variantUrl, vcfg.promptProp));
+  // SYSTEM：共通 → 種類別。USER：種類別の {{COMMON}} に共通 USER を差し込む（無ければ末尾）
+  const commonRe = /\{\{\s*COMMON\s*\}\}/;
+  const user = commonRe.test(own.user) ? own.user.replace(commonRe, () => common.user) : own.user + '\n\n' + common.user;
+  const prompt = {
+    system: common.system + '\n\n' + own.system,
+    user: user,
+    version: sha256_(common.version + ':' + own.version).slice(0, 10)
+  };
+  cache.put(cacheKey, JSON.stringify(prompt), Math.min(numProp_('PROMPT_CACHE_SEC'), CACHE_MAX_SEC));
+  return prompt;
+}
+function fetchPromptText_(url, propName) {
   let res;
   try {
     res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
   } catch (e) {
     console.error('prompt fetch failed: ' + url, e);
-    throw new AppError('CONFIG', 'プロンプトファイルに接続できません。管理者は PROMPT_URL を確認してください');
+    throw new AppError('CONFIG', 'プロンプトファイルに接続できません。管理者は ' + propName + ' を確認してください');
   }
   const code = res.getResponseCode();
   if (code !== 200) {
     console.error('prompt fetch HTTP ' + code + ': ' + url);
-    throw new AppError('CONFIG', 'プロンプトファイルを取得できません（HTTP ' + code + '）。管理者は PROMPT_URL を確認してください');
+    throw new AppError('CONFIG', 'プロンプトファイルを取得できません（HTTP ' + code + '）。管理者は ' + propName + ' を確認してください');
   }
-  const prompt = parsePrompt_(res.getContentText('UTF-8'));
-  cache.put(cacheKey, JSON.stringify(prompt), Math.min(numProp_('PROMPT_CACHE_SEC'), CACHE_MAX_SEC));
-  return prompt;
+  return res.getContentText('UTF-8');
 }
-function normalizePromptUrl_(url) {
+function normalizePromptUrl_(url, propName) {
   const u = String(url || '').trim();
-  if (!u) throw new AppError('CONFIG', 'スクリプトプロパティ PROMPT_URL が未設定です');
+  if (!u) throw new AppError('CONFIG', 'スクリプトプロパティ ' + (propName || 'PROMPT_URL_*') + ' が未設定です');
   const m = u.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/);
   return m ? [RAW_GITHUB_BASE, m[1], m[2], m[3]].join('/') : u;
 }
 function parsePrompt_(rawText) {
   if (/^\s*<(!doctype|html)/i.test(rawText)) {
-    throw new AppError('CONFIG', 'プロンプトが HTML で返りました。PROMPT_URL に raw URL を指定してください');
+    throw new AppError('CONFIG', 'プロンプトが HTML で返りました。PROMPT_URL_* に raw URL を指定してください');
   }
   const text = rawText.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/<!--[\s\S]*?-->/g, '');
   const m = text.match(/^#{2,3}[ \t]*SYSTEM[ \t]*\n([\s\S]*?)^#{2,3}[ \t]*USER[ \t]*\n([\s\S]*)$/im);
@@ -623,7 +644,7 @@ function fillTemplate_(tpl, vars) {
   });
 }
 function clearPromptCache() {
-  CacheService.getScriptCache().removeAll(['default'].concat(Object.keys(VARIANTS)).map(k => KEY.PROMPT + k));
+  CacheService.getScriptCache().removeAll(Object.keys(VARIANTS).map(k => KEY.PROMPT + k));
   console.log('プロンプトのキャッシュを削除しました');
 }
 
@@ -770,56 +791,21 @@ function fail_(code, message) { return json_({ ok: false, code: code, message: m
 function checkSetup() {
   const url = azureUrl_();
   if (!/^https:\/\/[^\s<>"']+$/.test(url)) console.error('★ AZURE_MODEL.endpoint に HTML 等が混入しています: ' + AZURE_MODEL.endpoint);
-  ['APP_PASSWORD', AZURE_MODEL.secret, 'PROMPT_URL'].forEach(k => console.log(k + ': ' + (prop_(k) ? '設定済み' : '★未設定')));
-  Object.keys(VARIANTS).forEach(v => console.log(VARIANTS[v].promptProp + ': ' + (prop_(VARIANTS[v].promptProp) ? '設定済み' : '未設定（PROMPT_URL を使用）')));
+  ['APP_PASSWORD', AZURE_MODEL.secret].concat(Object.keys(VARIANTS).map(v => VARIANTS[v].promptProp))
+    .forEach(k => console.log(k + ': ' + (prop_(k) ? '設定済み' : '★未設定')));
+  console.log('PROMPT_URL_COMMON: ' + (prop_('PROMPT_URL_COMMON') ? '設定済み' : '未設定（種類別ファイルと同じフォルダの drop_coach_common.md を使用）'));
   console.log('MODEL: ' + AZURE_MODEL.name + ' / URL: ' + url);
   console.log('画像解析: ' + (boolProp_('ENABLE_IMAGES') ? 'ON' : 'OFF') + ' / GAS からの取得: ' + (boolProp_('SERVER_IMAGE_FETCH') ? 'ON' : 'OFF') +
     ' / 最大 ' + numProp_('MAX_IMAGES') + ' 枚 / detail=' + prop_('IMAGE_DETAIL'));
-  console.log('PROMPT 取得先: ' + normalizePromptUrl_(prop_('PROMPT_URL')));
   clearPromptCache();
-  [''].concat(Object.keys(VARIANTS)).forEach(v => {
+  Object.keys(VARIANTS).forEach(v => {
     const p = loadPrompt_(v);
-    console.log('プロンプト[' + (v || 'default') + '] version=' + p.version + ' system=' + p.system.length + '字 user=' + p.user.length + '字');
+    console.log('プロンプト[' + v + '] version=' + p.version + ' system=' + p.system.length + '字 user=' + p.user.length + '字' +
+      (/\{\{\s*COMMON\s*\}\}/.test(p.user) ? ' ★{{COMMON}} が残っています' : ''));
   });
 }
 // 8x8 灰色の JPEG（モデル疎通用。内容の解析結果には意味がない）
 const TEST_JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIfIiEmKzcvJik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDuqKKKAP/Z';
-
-/** ブラウザ画像（data URL）を受け取る経路の確認：1x1 の JPEG を使って Azure まで通す（エディタから実行） */
-function testCoachWithDataUrl() {
-  const tinyJpeg = TEST_JPEG;
-  console.log('data URL 検証: ' + (sanitizeImageData_(tinyJpeg) ? 'OK' : '★NG'));
-  const login = JSON.parse(handleLogin_({ password: prop_('APP_PASSWORD') }).getContent());
-  const base = 'https://adpf-poc.com/machiapps/userdata/photos/machi/';
-  const t0 = Date.now();
-  const out = JSON.parse(handleCoach_({
-    token: login.token, force: true, goal: { type: 'pv' },
-    context: { event: 'test', total_posts: 22, ref_basis: 'PV 上位', ref_top_n: 1, ref_pool_size: 21, ref_pool_filter: 'なし' },
-    target: { like: 2, pv: 0, text: '大同生命大阪本社ビル 1993年竣工・高さ88メートル', name: '大同生命大阪本社ビル',
-      image: base + '64d7328c-b040-4895-94ae-1ed9a8853881_thumbnail.jpeg', image_data: tinyJpeg },
-    references: [{ like: 1, pv: 27, text: '今では珍しい二重螺旋階段と噴水です！', name: 'OMM' }],
-    instructions: ''
-  }).getContent());
-  console.log('所要 ' + (Date.now() - t0) + 'ms / images_used=' + out.images_used + ' / from_browser=' + out.images_from_browser + ' / note=' + (out.images_note || '-'));
-  console.log(JSON.stringify(out.result, null, 2));
-}
-
-/** 投稿前チェック（mode:"draft"）の経路確認：アップロード画像（data URL のみ）＋本文で Azure まで通す（エディタから実行） */
-function testDraftCheck() {
-  const tinyJpeg = TEST_JPEG;
-  const login = JSON.parse(handleLogin_({ password: prop_('APP_PASSWORD') }).getContent());
-  const t0 = Date.now();
-  const out = JSON.parse(handleCoach_({
-    token: login.token, force: true, mode: 'draft', goal: { type: 'like' },
-    context: { event: 'test', total_posts: 22, ref_basis: 'いいね上位', ref_top_n: 1, ref_pool_size: 22, ref_pool_filter: 'なし' },
-    target: { text: '階段の手すりの丸みが、触るとひんやりして驚きました。', image_data: tinyJpeg },
-    references: [{ like: 5, pv: 27, text: '今では珍しい二重螺旋階段と噴水です！', name: 'OMM' }],
-    instructions: ''
-  }).getContent());
-  if (!out.ok) { console.error(JSON.stringify(out)); return; }
-  console.log('所要 ' + (Date.now() - t0) + 'ms / images_used=' + out.images_used + ' / note=' + (out.images_note || '-'));
-  console.log('viewpoint=' + JSON.stringify(out.result.viewpoint) + ' / photo.match=' + out.result.photo.match);
-}
 
 /** v5：サンプル参照版（variant:"with_sample"）の経路確認（エディタから実行） */
 function testWithSample() {
