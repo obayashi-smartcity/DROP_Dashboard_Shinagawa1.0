@@ -278,6 +278,10 @@
   .result{margin-top:4px}
   .result.loading{opacity:.45;transition:opacity .2s}
   .r-meta{font-size:11px;color:var(--dim);margin-bottom:10px}
+  .cat{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 14px;padding:12px 14px;border:2px solid var(--rich);background:#fff}
+  .cat b{font-family:var(--font-display);font-size:26px;font-weight:900;line-height:1;color:var(--rich)}
+  .cat span{font-size:15px;font-weight:900;color:var(--rich)}
+  .cat em{font-style:normal;font-size:12px;color:var(--muted)}
   .headline{font-size:17px;font-weight:900;line-height:1.6;padding:16px 20px;background:linear-gradient(90deg,var(--rich-soft),transparent);border-left:4px solid var(--rich);margin-bottom:20px}
   .sec{display:flex;align-items:center;gap:8px;font-size:10.5px;letter-spacing:1.6px;text-transform:uppercase;color:var(--dim);font-weight:800;margin:6px 0 12px}
   .sec::after{content:"";flex:1;height:1px;background:var(--stroke-soft)}
@@ -1111,6 +1115,7 @@ function renderResult(r, pl) {
   const hasIns = !!ins.summary || (ins.traits || []).length;
   $("result").innerHTML = `
     <div class="r-meta">参考投稿なし（入力内容のみで分析）</div>
+    ${r.category && r.category.code ? `<div class="cat"><b>${esc(r.category.code)}</b><span>${esc(r.category.label)}</span><em>${esc(r.category.direction)}</em></div>` : ""}
     ${r.headline ? `<div class="headline">${esc(r.headline)}</div>` : ""}
 
     ${vp.level || vp.summary ? `

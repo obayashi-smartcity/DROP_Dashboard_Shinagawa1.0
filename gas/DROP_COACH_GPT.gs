@@ -70,6 +70,10 @@
  *     SYSTEM は「共通 → 種類別」の順につなげ、共通の USER（出力内容）は種類別 USER の {{COMMON}} の位置に差し込む（無ければ末尾）
  *   - variant（with_sample / no_sample）を必須にした。variant の無い従来版（posted モード・PROMPT_URL）は廃止
  *
+ * ■ v6.1 の変更
+ *   - 出力に category（A：心が動いた／B：人とつながった／C：会社の印象）を追加。result.category = { code, label, direction }
+ *   - viewpoint.summary の先頭に「分類：X ラベル。」を GAS 側で付ける（ログで振り分けに使う）
+ *
  * ■ 貼り付け時の注意
  *   貼り付け後に「&g」+「t;」「&l」+「t;」「<a」+「 href」で検索し 0 件であることを確認すること。
  */
@@ -109,6 +113,12 @@ const KEY = { FAIL: 'coach_auth_fail', PROMPT: 'coach_prompt_v6_', TOKEN: 'coach
 const LIMITS = { STRENGTHS: 3, WEAKNESSES: 3, TRAITS: 3, TIPS: 3, EVIDENCE: 3, IMPROVEMENTS: 4, POINTS: 3, CAVEATS: 2, FOUND: 3, QUESTIONS: 3 };
 const LEVELS = ['低', '中', '高'];
 const MATCHES = ['一致', '一部一致', '不一致'];
+/* v6.1：投稿の 3 パターン分類（企業 WS 素案 p.9） */
+const CATEGORIES = {
+  A: { label: '心が動いた', direction: '「自分なら何をやってみたい？」方向へ' },
+  B: { label: '人とつながった', direction: '「誰と何でつながった？」方向へ' },
+  C: { label: '会社の印象', direction: '「その様子から会社をどう感じた？」方向へ' }
+};
 const MODES = {
   posted: '投稿済み（DROP に投稿済みの投稿を改善する。T の数値は参考情報）',
   draft: '投稿前（利用者が投稿前にチェックしたい下書き。T には PV・いいね・順位・投稿日時が無い）'
@@ -543,10 +553,15 @@ function normalizeResult_(data, validIds, imageIds) {
   const obj = v => (v && typeof v === 'object' ? v : {});
   const dg = obj(d.diagnosis), ri = obj(d.reference_insights), rw = obj(d.rewrite), ph = obj(d.photo), vp = obj(d.viewpoint);
   return {
+    category: Object.prototype.hasOwnProperty.call(CATEGORIES, d.category)
+      ? { code: d.category, label: CATEGORIES[d.category].label, direction: CATEGORIES[d.category].direction }
+      : { code: '', label: '', direction: '' },
     headline: text(d.headline),
     viewpoint: {
       level: level(vp.level),
-      summary: text(vp.summary),
+      // ログの「視点の診断」列で振り分けられるよう、先頭に分類を付ける（AI が付けた「分類：…」は除いて付け直す）
+      summary: (CATEGORIES[d.category] ? '分類：' + d.category + ' ' + CATEGORIES[d.category].label + '。' : '') +
+        text(vp.summary).replace(/^\s*分類[：:][^。]*。\s*/, ''),
       found: list(vp.found, LIMITS.FOUND),
       questions: list(vp.questions, LIMITS.QUESTIONS)
     },
@@ -656,8 +671,9 @@ const OUTPUT_SCHEMA = (() => {
     type: 'object',
     additionalProperties: false,
     // 出力順＝評価順（視点 → 画像の一致 → 診断 → … → 結論）。strict モードではこの順に生成される
-    required: ['viewpoint', 'photo', 'diagnosis', 'reference_insights', 'improvements', 'rewrite', 'headline', 'caveats'],
+    required: ['category', 'viewpoint', 'photo', 'diagnosis', 'reference_insights', 'improvements', 'rewrite', 'headline', 'caveats'],
     properties: {
+      category: { type: 'string', enum: Object.keys(CATEGORIES) },
       viewpoint: {
         type: 'object', additionalProperties: false,
         required: ['level', 'summary', 'found', 'questions'],
