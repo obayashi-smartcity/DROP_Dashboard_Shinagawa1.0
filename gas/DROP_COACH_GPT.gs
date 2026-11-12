@@ -44,7 +44,7 @@
  *     MAX_REFS (20) / MAX_TEXT (300) / MAX_INSTR (400) / MAX_GOAL (200)
  *     ENABLE_IMAGES     (true)  … false で画像を一切使わない
  *     IMAGE_URL_PREFIX  (https://adpf-poc.com/machiapps/userdata/photos/) … 受け付ける画像 URL の先頭（カンマ区切り可）
- *     MAX_IMAGES        (6)     … 1 回に使う画像の上限（T 優先 → R の上から）
+ *     MAX_IMAGES        (9)     … 1 回に使う画像の上限（T 優先 → R の上から）
  *     MAX_IMAGE_BYTES   (1500000) … 1 枚あたりのサイズ上限（デコード後）
  *     IMAGE_DETAIL      (low)   … low / high / auto
  *     SERVER_IMAGE_FETCH (true) … image_data が無い画像を GAS から取得するか（403 環境なら false で時間短縮）
@@ -79,6 +79,16 @@
  *   - 分類を KPI①②③判定に変更（A=①挑戦／B=②属性横断／C=③信頼・心理的安全性／D=該当なし）。CATEGORIES の label・direction のみ変更
  *   - プロンプト（drop_coach_common.md）側で 5W1H の点検と KPI 判定を行う。出力スキーマ・処理は変更なし
  *
+ * ■ v7.1 の変更（2026/11/12）ステップ形式のコーチ
+ *   - 画面は「初回の分析 → 問いに 1 つずつ答える（画面内で文面に反映。途中で終えてもよい）→ 仕上げ」の流れ。AI の分析は 1 人 2 回まで
+ *   - 問いの上限を 3 → 6 に変更（LIMITS.QUESTIONS）
+ *   - 仕上げのとき req.answers（[{ q:"問い", a:"回答" }, …]）と req.working_text（画面で答えを【 】に入れた今の文面）を受け取り、
+ *     プロンプトの {{ANSWERS}} に差し込む（無ければ「（なし：初回）」）。テンプレートに {{ANSWERS}} が無い場合は末尾に追記する
+ *   - answers・working_text を結果キャッシュのキーに含める（回答が変われば再分析）
+ *   - 見本投稿（サンプル）の写真：許可 URL 以外でも、ブラウザから届いた正しい画像データ（image_data）があれば使う
+ *     （json/sample_img の写真を AI に渡すため。GAS から外部取得はしない）
+ *   - 1 回に使う画像の上限 MAX_IMAGES の既定値を 6 → 9 に変更（入力した画像 1 枚＋見本 8 枚）
+ *
  * ■ 貼り付け時の注意
  *   貼り付け後に「&g」+「t;」「&l」+「t;」「<a」+「 href」で検索し 0 件であることを確認すること。
  */
@@ -106,7 +116,7 @@ const DEFAULTS = {
   MAX_GOAL: 200,
   ENABLE_IMAGES: 'true',
   IMAGE_URL_PREFIX: 'https://adpf-poc.com/machiapps/userdata/photos/',
-  MAX_IMAGES: 6,
+  MAX_IMAGES: 9,   // v7.1：入力した画像 1 枚＋見本投稿 8 枚
   MAX_IMAGE_BYTES: 1500000,
   IMAGE_DETAIL: 'low',
   SERVER_IMAGE_FETCH: 'true',
@@ -115,7 +125,7 @@ const DEFAULTS = {
 const CACHE_MAX_SEC = 21600;
 const FAIL_WINDOW_SEC = 900;
 const KEY = { FAIL: 'coach_auth_fail', PROMPT: 'coach_prompt_v6_', TOKEN: 'coach_tok_', RESULT: 'coach_res5_', QUOTA: 'coach_count_' };
-const LIMITS = { STRENGTHS: 3, WEAKNESSES: 3, TRAITS: 3, TIPS: 3, EVIDENCE: 3, IMPROVEMENTS: 4, POINTS: 3, CAVEATS: 2, FOUND: 3, QUESTIONS: 3 };
+const LIMITS = { STRENGTHS: 3, WEAKNESSES: 3, TRAITS: 3, TIPS: 3, EVIDENCE: 3, IMPROVEMENTS: 4, POINTS: 3, CAVEATS: 2, FOUND: 3, QUESTIONS: 6 };
 const LEVELS = ['低', '中', '高'];
 const MATCHES = ['一致', '一部一致', '不一致'];
 /* v7：コクヨKPI（3つのカルチャー変革）による判定。記号は出力スキーマ A〜D のまま */
@@ -137,6 +147,7 @@ const VARIANTS = {
     mode: '投稿前（これから投稿する下書き）。参考投稿は無く、T の本文と画像だけで分析する' }
 };
 const DRAFT_IMAGE_KEY = 'upload:';   // アップロード画像の擬似 URL（キャッシュキー用。外部取得はしない）
+const SAMPLE_IMAGE_KEY = 'sample:';  // v7.1：見本投稿の写真（ブラウザから届いた画像データ）の擬似 URL
 const GOAL_TYPES = { pv: 'PVを上げる', like: 'いいねを増やす', other: 'その他の目的' };
 const IMAGE_TYPES = /^image\/(jpeg|png|webp|gif)$/i;
 const VARIANT_CFG_ = v => (Object.prototype.hasOwnProperty.call(VARIANTS, v) ? VARIANTS[v] : null);
@@ -235,6 +246,8 @@ function handleCoach_(req) {
   if (!references.length && (!vcfg || vcfg.needRefs)) throw new AppError('BAD_REQUEST', vcfg ? 'サンプル投稿がありません' : '参考投稿がありません');
   const context = vcfg ? sanitizeVariantContext_(req.context) : sanitizeContext_(req.context);
   const instructions = sanitizeText_(req.instructions, numProp_('MAX_INSTR'));
+  const answers = sanitizeAnswers_(req.answers);
+  const workingText = answers.length ? sanitizeText_(req.working_text, 400) : '';
 
   // 画像は投稿オブジェクトから切り離して管理（テキスト JSON には URL・データを入れない）
   const imageReqs = pickImages_([target].concat(references));
@@ -245,7 +258,7 @@ function handleCoach_(req) {
   // キャッシュキーは画像 URL ＋「ブラウザ画像の有無」で判定（base64 本体は含めない）
   const cache = CacheService.getScriptCache();
   const cacheKey = KEY.RESULT + sha256_(JSON.stringify([
-    model, prompt.version, variant, mode, goal, context, target, references, instructions,
+    model, prompt.version, variant, mode, goal, context, target, references, instructions, answers, workingText,
     imageReqs.map(x => [x.id, x.url, !!x.dataUrl]), prop_('IMAGE_DETAIL')
   ]));
   if (!req.force) {
@@ -280,12 +293,15 @@ function handleCoach_(req) {
     REFERENCES: references.length ? JSON.stringify(references) : '（なし）',
     REF_IDS: refIds.length ? refIds.join(', ') : '（なし）',
     INSTRUCTIONS: instructions || '（なし）',
+    ANSWERS: answers.length ? (workingText ? '今の文面（画面で答えを【 】に入れたもの）:\n' + workingText + '\n\n' : '') +
+      answers.map((x, i) => 'Q' + (i + 1) + ': ' + x.q + '\nA' + (i + 1) + ': ' + x.a).join('\n') : '（なし：初回）',
     IMAGE_IDS: images.length ? images.map(x => x.id).join(', ') : '（なし）'
   };
   let userText = fillTemplate_(prompt.user, vars);
   const tplRaw = prompt.user.replace(/\\/g, '');
   if (instructions && !/\{\{\s*INSTRUCTIONS\s*\}\}/.test(tplRaw)) userText += '\n\n### 利用者からの追加の指示\n' + instructions;
   if (images.length && !/\{\{\s*IMAGE_IDS\s*\}\}/.test(tplRaw)) userText += '\n\n### 添付画像のある投稿 ID\n' + vars.IMAGE_IDS;
+  if (answers.length && !/\{\{\s*ANSWERS\s*\}\}/.test(tplRaw)) userText += '\n\n### コーチへの回答（これまでの問いと回答）\n' + vars.ANSWERS;
 
   const noImageNote = '\n\n※今回は画像が添付されていません。photo は空（match と summary は空文字、tips と evidence_ids は空配列）で返してください。';
   const textOnly = [
@@ -521,14 +537,26 @@ function sanitizeSamples_(raw) {
       };
       if (p.name) o.name = str_(p.name, 40);
       const img = sanitizeImageUrl_(p.image);
+      const data = p.image_data ? sanitizeImageData_(p.image_data) : '';
       if (img) {
         o.image = img;
-        const data = sanitizeImageData_(p.image_data);
         if (data) o.image_data = data;
+      } else if (data) {
+        // v7.1：許可 URL 以外（見本投稿の写真など）は、ブラウザから届いた画像データだけを使う（GAS から取得しない）
+        o.image = SAMPLE_IMAGE_KEY + sha256_(data).slice(0, 24);
+        o.image_data = data;
       }
       return o;
     })
     .filter(o => o.text);
+}
+/** v7.1：ステップ形式のコーチの「これまでの問いと回答」。最大 8 件・問い 100 字・回答 150 字 */
+function sanitizeAnswers_(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(x => x && typeof x === 'object')
+    .slice(0, 8)
+    .map(x => ({ q: str_(x.q, 100), a: str_(x.a, 150) }))
+    .filter(x => x.q && x.a);
 }
 function sanitizeVariantContext_(raw) {
   const c = raw && typeof raw === 'object' ? raw : {};

@@ -250,6 +250,8 @@
   mark.mine{background:#dff3e7;color:inherit;padding:0 2px;border-bottom:2px solid #2f8f66}
   .coach-ready{padding:14px;background:var(--rich-soft);font-size:14px;line-height:1.7}
   .coach-ready .hint{margin-top:8px}
+  .coach-rest{margin-top:8px}
+  .btn.finish{border-color:var(--rich-2);color:var(--rich)}
   .coach-done{font-size:14px;font-weight:700;padding:12px 14px;background:#eef8f2;border-left:4px solid #2f8f66}
   .coach-log{margin-top:12px;font-size:12.5px;color:var(--muted)}
   .coach-log summary{cursor:pointer;font-weight:700}
@@ -589,8 +591,8 @@
       <aside class="target" id="targetCard"></aside>
 
       <div class="stack">
-        <!-- 画像解析 -->
-        <div class="panel">
+        <!-- 画像解析（運営のみ表示） -->
+        <div class="panel" id="optPanel">
           <div class="ph"><h2><span class="n">A</span>解析の設定</h2><span class="sub">参考投稿は使わず、入力内容だけで分析します</span></div>
           <div class="ref-tools" style="margin-bottom:0">
             <label class="toggle"><input type="checkbox" id="sendImg" />画像も解析<span class="img-note" id="imgNote"></span></label>
@@ -635,10 +637,10 @@
         <div class="panel" id="resultPanel">
           <div class="ph"><h2><span class="n">✦</span>AI の改善提案</h2><span class="sub" id="resultMeta">未実行</span></div>
           <div class="result" id="result">
-            <div class="placeholder"><b>まだ分析していません</b>実行ボタンを押してください。</div>
+            <div class="placeholder"><b>まだ分析していません</b>「コーチを始める」を押すと、AI があなたの投稿を読んで問いを出します。</div>
           </div>
           <div class="status" id="logStatus" hidden></div>
-          <div class="note" id="sendNote">AI による自動分析です。判断の参考としてご利用ください。送信するのは入力したコメント・表示名、「画像も解析」が ON のときは画像（アップロード画像を、このブラウザで長辺 512px に縮小したもの。位置情報などの撮影情報は含みません）、および入力した追加指示のみで、アカウント ID・位置情報は送信しません。実行のたびに Name・追加指示・入力したコメント・AI の改善提案を記録します（アップロード画像は記録しません）。</div>
+          <div class="note" id="sendNote">AI による自動分析です。判断の参考としてご利用ください。送信するのは、入力したコメント・表示名・画像（このブラウザで長辺 512px に縮小したもの。位置情報などの撮影情報は含みません）、問いへの答えのみで、アカウント ID・位置情報は送信しません。AI の分析は「コーチを始める」と「仕上げ」の 2 回です。実行のたびに Name・入力したコメント・問いへの答え・AI の提案を記録します（アップロード画像は記録しません）。</div>
         </div>
       </div>
     </div>
@@ -1022,7 +1024,7 @@ function syncButtons() {
 }
 function syncRunNote() {
   if (!targetPost()) return;
-  $("runNote").innerHTML = `入力したコメント${S.draft.img && S.sendImages ? "と画像" : ""}だけをもとに、改善案を作成します。`;
+  $("runNote").innerHTML = `入力したコメント${S.draft.img && S.sendImages ? "と画像" : ""}を読んで、足りないところを問いにします（AI の分析は最初と仕上げの 2 回）。`;
 }
 function showLogin(msg) {
   $("login").hidden = false; $("loginErr").textContent = msg || "";
@@ -1042,7 +1044,8 @@ async function run(force) {
   }
   if (!canAnalyze()) { status("Step 1 でコメントを入力してください", "error"); return; }
   const pl = buildPayload();
-  pl.answers = coachAnswersToSend(); S.coach.sending = pl.answers.length;   // 仕上げのときだけ回答を送る
+  pl.answers = coachAnswersToSend(); S.coach.sending = pl.answers.length;
+  pl.working = pl.answers.length ? coachLocalSegs().map(x => x.t).join("") : "";   // 画面で答えを【 】に入れた今の文面   // 仕上げのときだけ回答を送る
   S.busy = true; syncButtons();
   $("result").classList.add("loading");
   const t0 = Date.now();
@@ -1051,7 +1054,7 @@ async function run(force) {
   status(`<span class="spin"></span><span>AI が${withImg ? "画像と本文を" : ""}解析して改善案を作成しています… <b id="sec">0</b> 秒</span>`);
   S.timer = setInterval(() => { const s = $("sec"); if (s) s.textContent = Math.floor((Date.now() - t0) / 1000); }, 250);
   const seq = S.runSeq = (S.runSeq || 0) + 1;
-  const res = await post({ action: "coach", token: getToken(CONFIG.KEYS.TOKEN), variant: pl.variant, mode: pl.mode, goal: pl.goal, context: pl.context, target: pl.target, references: pl.references, instructions: pl.instructions, answers: pl.answers, force: !!force }, CONFIG.GAS_URL);
+  const res = await post({ action: "coach", token: getToken(CONFIG.KEYS.TOKEN), variant: pl.variant, mode: pl.mode, goal: pl.goal, context: pl.context, target: pl.target, references: pl.references, instructions: pl.instructions, answers: pl.answers, working_text: pl.working || "", force: !!force }, CONFIG.GAS_URL);
   clearInterval(S.timer); S.busy = false;
   syncButtons(); $("result").classList.remove("loading");
   const sec = ((Date.now() - t0) / 1000).toFixed(1);
@@ -1244,7 +1247,7 @@ function setCoachFromResult(r, pl) {
   const C = S.coach;
   C.last = { r, pl };
   if (C.sending > 0) { C.phase = "done"; return; }   // 仕上げ（③）の結果
-  C.qs = ((r.viewpoint || {}).questions || []).slice(0, 3);
+  C.qs = ((r.viewpoint || {}).questions || []).slice(0, 6);
   C.base = (r.rewrite || {}).text || pl.beforeText || "";
   C.pos = 0; C.filled = {}; C.answers = [];
   C.phase = C.qs.length ? "ask" : "done";
@@ -1301,13 +1304,17 @@ function renderCoach() {
         <div class="coach-acts">
           <button type="button" class="btn" id="coachSend">答えを文面に入れる</button>
           <button type="button" class="btn ghost sm" id="coachSkip">この問いはとばす</button>
+          ${C.pos > 0 ? `<button type="button" class="btn ghost sm" id="coachBack">← ひとつ前に戻る</button>` : ""}
+          ${answered ? `<button type="button" class="btn ghost sm finish" id="coachFinish">ここまでで仕上げる</button>` : ""}
         </div>
+        <div class="hint coach-rest">あと ${C.qs.length - C.pos} 問${answered ? "。途中でやめたくなったら「ここまでで仕上げる」を押すと、答えた分だけで AI が文面を整えます" : ""}</div>
       </div>` : C.phase === "ready" ? `
       <div class="coach-ready">
         <div>${answered ? "答えた言葉を使って、AI が 5 行の文面に整えます（AI の分析はこれが最後の 1 回です）。" : "問いをすべてとばしました。答え直すか、このまま「コピー」して投稿できます。"}</div>
         <div class="coach-acts">
           ${answered ? `<button type="button" class="btn" id="coachPolish">AI で文面を仕上げる</button>` : ""}
-          <button type="button" class="btn ghost sm" id="coachRedo">答え直す</button>
+          <button type="button" class="btn ghost sm" id="coachBack">← ひとつ前に戻る</button>
+          <button type="button" class="btn ghost sm" id="coachRedo">最初から答え直す</button>
         </div>
         ${answered ? `<div class="hint">このままでよければ、仕上げずに「コピー」して投稿しても大丈夫です。</div>` : ""}
       </div>` : `
@@ -1320,8 +1327,22 @@ function renderCoach() {
     catch (e) { cp.textContent = "コピー失敗"; }
     setTimeout(() => (cp.textContent = "コピー"), 1600);
   });
+  // ひとつ前に戻る：直前の答え（またはとばし）を取り消し、その問いをもう一度表示する。答えは入力欄に戻して直せるようにする
+  const back = () => {
+    if (!C.answers.length) return;
+    const last = C.answers.pop();
+    C.pos = Math.max(0, C.pos - 1);
+    delete C.filled[C.pos];
+    C.phase = "ask";
+    C.draftAns = last.skip ? "" : last.a;
+    renderCoach();
+  };
+  const bk = $("coachBack");
+  if (bk) bk.addEventListener("click", back);
   const next = () => { C.pos++; if (C.pos >= C.qs.length) C.phase = "ready"; renderCoach(); const t = $("coachAns"); if (t) t.focus({ preventScroll: true }); };
   if (C.phase === "ask") {
+    const fin = $("coachFinish");
+    if (fin) fin.addEventListener("click", () => { if (S.busy) return; C.phase = "ready"; S.retried = false; run(false); });
     const put = () => {
       const a = $("coachAns").value.replace(/\s+/g, " ").trim();
       if (!a) { $("coachAns").focus(); return; }
@@ -1330,6 +1351,7 @@ function renderCoach() {
     $("coachSend").addEventListener("click", put);
     $("coachAns").addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); put(); } });
     $("coachSkip").addEventListener("click", () => { C.answers.push({ q, a: "（とばした）", skip: true }); next(); });
+    if (C.draftAns) { $("coachAns").value = C.draftAns; C.draftAns = ""; }
     $("coachAns").focus({ preventScroll: true });
   }
   if (C.phase === "ready") {
@@ -1401,6 +1423,10 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && $("modal")
 
 /* ---------- 起動 ---------- */
 loadPrefs();
+const HIDE_FOR_GUEST = ["optPanel"];
+/* 運営以外（URL に ?staff=1 が無い人）には「追加の指示」などの設定を出さない。指示は送らず、画像は常に解析する */
+const STAFF = new URLSearchParams(location.search).get("staff") === "1";
+if (!STAFF) { S.instr = ""; S.sendImages = true; $("instrFold").hidden = true; HIDE_FOR_GUEST.forEach(id => { const el = $(id); if (el) el.hidden = true; }); }
 loadDraft();
 renderDraft();
 $("lName").value = getName();
