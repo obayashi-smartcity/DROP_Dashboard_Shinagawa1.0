@@ -73,6 +73,7 @@
  * ■ v6.1 の変更
  *   - 出力に category（A：心が動いた／B：人とつながった／C：会社の印象）を追加。result.category = { code, label, direction }
  *   - viewpoint.summary の先頭に「分類：X ラベル。」を GAS 側で付ける（ログで振り分けに使う）
+ *   - D（その他：A〜C に当てはまらない）を追加
  *
  * ■ 貼り付け時の注意
  *   貼り付け後に「&g」+「t;」「&l」+「t;」「<a」+「 href」で検索し 0 件であることを確認すること。
@@ -117,7 +118,8 @@ const MATCHES = ['一致', '一部一致', '不一致'];
 const CATEGORIES = {
   A: { label: '心が動いた', direction: '「自分なら何をやってみたい？」方向へ' },
   B: { label: '人とつながった', direction: '「誰と何でつながった？」方向へ' },
-  C: { label: '会社の印象', direction: '「その様子から会社をどう感じた？」方向へ' }
+  C: { label: '会社の印象', direction: '「その様子から会社をどう感じた？」方向へ' },
+  D: { label: 'その他', direction: '何を・誰と・どのように・なぜ を明確に' }
 };
 const MODES = {
   posted: '投稿済み（DROP に投稿済みの投稿を改善する。T の数値は参考情報）',
