@@ -227,6 +227,33 @@
   ul.li.qlist li i{background:var(--rich-2)}
   .prio{white-space:nowrap;font-size:9.5px;font-weight:800;color:#fff;background:var(--rich);padding:2px 6px;letter-spacing:.5px}
   mark.blank{background:#fff1b8;color:inherit;padding:0 2px}
+  /* ステップ形式のコーチ（v7.1） */
+  .coach{border:1px solid var(--stroke-soft);border-top:4px solid var(--rich);background:#fff;padding:18px 20px;margin-bottom:22px}
+  .coach-hd{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .coach-hd b{font-size:15px}
+  .coach-step{background:var(--rich);color:#fff;font-size:11px;font-weight:800;letter-spacing:.08em;padding:3px 8px}
+  .coach-head{font-size:15px;font-weight:800;line-height:1.6;padding:10px 14px;background:var(--rich-soft);border-left:4px solid var(--rich);margin-bottom:12px}
+  .w5{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+  .w5c{font-size:12px;border:1px solid var(--stroke);padding:3px 8px;display:inline-flex;gap:4px;align-items:center;background:#fff}
+  .w5c b{font-weight:900}
+  .w5c em{font-style:normal;font-size:10px;background:#e3f1f4;color:#2b7a8c;padding:0 4px}
+  .w5c.ok{border-color:#9fd3b8;background:#eef8f2}.w5c.ok b{color:#2f8f66}
+  .w5c.mid{border-color:#ead58f;background:#fdf8e6}.w5c.mid b{color:#a07d00}
+  .w5c.ng{border-color:#f0b5b5;background:#fdf0f0}.w5c.ng b{color:#c0392b}
+  .coach-text{background:var(--bg);padding:12px 14px;margin-bottom:14px}
+  .coach-text small{display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px}
+  .coach-text p{margin:0;font-size:15px;line-height:1.9;white-space:pre-wrap}
+  .coach-q{border:2px solid var(--rich-2);padding:14px;background:#fff}
+  .coach-qt{display:flex;gap:10px;align-items:flex-start;font-size:15px;font-weight:700;line-height:1.6;margin-bottom:10px}
+  .coach-qt i{font-style:normal;background:var(--rich);color:#fff;font-size:12px;font-weight:900;padding:2px 7px;flex:none}
+  .coach-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}
+  .coach-done{font-size:14px;font-weight:700;padding:12px 14px;background:#eef8f2;border-left:4px solid #2f8f66}
+  .coach-log{margin-top:12px;font-size:12.5px;color:var(--muted)}
+  .coach-log summary{cursor:pointer;font-weight:700}
+  .coach-log div{padding:6px 0;border-bottom:1px dashed var(--stroke-soft);line-height:1.7}
+  .coach-log b{color:var(--rich);margin-right:6px}
+  details.more{margin-top:8px;border-top:1px solid var(--stroke-soft);padding-top:12px}
+  details.more>summary{cursor:pointer;font-weight:800;font-size:13px;color:var(--muted);margin-bottom:14px}
   .rw-hint{font-size:11px;color:var(--warn);padding:0 16px 12px}
   /* スマホ用の実行ボタン（Step 2 で実行パネルが画面外のときだけ表示） */
   .rundock{display:none}
@@ -715,7 +742,8 @@ const S = {
   draft: { text: "", name: "", img: "", imgAi: "", w: 0, h: 0, sig: "" },
   refN: CONFIG.REF_N, refIds: [], refOff: new Set(), loaded: false,
   instr: "", sendImages: CONFIG.SEND_IMAGES,
-  busy: false, lastKey: null, idMap: {}, pendingForce: false, timer: null
+  busy: false, lastKey: null, idMap: {}, pendingForce: false, timer: null,
+  coach: { answers: [], queue: [], last: null }
 };
 
 /* ---------- サンプル投稿データ ---------- */
@@ -991,7 +1019,7 @@ function syncOptState() {
   $("optState").textContent = on ? "反映中" : "任意";
   $("optState").classList.toggle("on", on);
 }
-function ctrlEnter(e) { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); savePrefs(); run(false); } }
+function ctrlEnter(e) { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); savePrefs(); resetCoach(); run(false); } }
 $("instr").addEventListener("keydown", ctrlEnter);
 
 /* =====================================================================
@@ -1137,7 +1165,7 @@ function buildPayload() {
 
 function status(html, cls) { const st = $("status"); st.className = "status" + (cls ? " " + cls : ""); st.innerHTML = html; st.hidden = !html; }
 function syncButtons() {
-  const label = S.busy ? "分析中…" : "改善案を生成";
+  const label = S.busy ? "分析中…" : (S.coach.last ? "最初からコーチし直す" : "コーチを始める");
   $("runBtn").disabled = $("runBtn2").disabled = S.busy || !configured(CONFIG.GAS_URL);
   $("runLabel").textContent = $("runLabel2").textContent = label;
   $("forceBtn").disabled = S.busy; $("loginBtn").disabled = S.busy;
@@ -1182,7 +1210,7 @@ async function run(force) {
   status(`<span class="spin"></span><span>AI が${withImg ? "画像と本文を" : ""}解析して改善案を作成しています… <b id="sec">0</b> 秒</span>`);
   S.timer = setInterval(() => { const s = $("sec"); if (s) s.textContent = Math.floor((Date.now() - t0) / 1000); }, 250);
   const seq = S.runSeq = (S.runSeq || 0) + 1;
-  const res = await post({ action: "coach", token: getToken(CONFIG.KEYS.TOKEN), variant: pl.variant, mode: pl.mode, goal: pl.goal, context: pl.context, target: pl.target, references: pl.references, instructions: pl.instructions, force: !!force }, CONFIG.GAS_URL);
+  const res = await post({ action: "coach", token: getToken(CONFIG.KEYS.TOKEN), variant: pl.variant, mode: pl.mode, goal: pl.goal, context: pl.context, target: pl.target, references: pl.references, instructions: pl.instructions, answers: S.coach.answers.map(x => ({ q: x.q, a: x.a })), force: !!force }, CONFIG.GAS_URL);
   clearInterval(S.timer); S.busy = false;
   syncButtons(); $("result").classList.remove("loading");
   const sec = ((Date.now() - t0) / 1000).toFixed(1);
@@ -1227,7 +1255,7 @@ async function sendLog(pl, res, sec, seq) {
     target_id: "",
     target_text: pl.target.text,
     ref_ids: pl.references.map(r => pl.idMap[r.id]),
-    instructions: pl.instructions,
+    instructions: [pl.instructions, S.coach.answers.length ? "［コーチへの回答］\n" + coachAnswersText(S.coach.answers) : ""].filter(Boolean).join("\n"),
     status: res.ok ? "OK" : (res.code || "ERROR"),
     error: res.ok ? "" : (res.message || ""),
     model: res.model || "", prompt_version: res.prompt_version || "",
@@ -1277,7 +1305,9 @@ function renderResult(r, pl) {
   const blanks = /【[^】]*】/g;   // 書き換え例の「投稿者が自分で埋める空欄」
   const rwHtml = esc(rw.text || "").replace(blanks, m => `<mark class="blank">${m}</mark>`);
   const hasIns = !!ins.summary || (ins.traits || []).length;
-  $("result").innerHTML = `
+  S.coach.last = { r, pl }; S.coach.queue = ((r.viewpoint || {}).questions || []).slice();
+  $("result").innerHTML = `<div id="coachBox"></div>
+    <details class="more"><summary>詳しい診断を見る（分類・写真・改善アクションなど）</summary>
     <div class="r-meta">サンプル投稿 ${pl.references.length} 件と比較</div>
     ${r.category && r.category.code ? `<div class="cat"><b>${esc(r.category.code)}</b><span>${esc(r.category.label)}</span><em>${esc(r.category.direction)}</em></div>` : ""}
     ${r.headline ? `<div class="headline">${esc(r.headline)}</div>` : ""}
@@ -1340,7 +1370,9 @@ function renderResult(r, pl) {
     </div>` : ""}
 
     ${(r.caveats || []).length ? `<div class="caveats">${r.caveats.map(c => `<div><b>注意</b>${esc(c)}</div>`).join("")}</div>` : ""}
-    ${applied.length ? `<div class="applied">反映した入力：${applied.join("・")}</div>` : ""}`;
+    ${applied.length ? `<div class="applied">反映した入力：${applied.join("・")}</div>` : ""}
+    </details>`;
+  renderCoach();
   $("result").querySelectorAll("[data-eid]").forEach(b => b.addEventListener("click", () => { const p = postOf(S.idMap[b.dataset.eid]); if (p) openModal(p); }));
   const cp = $("copyBtn");
   if (cp) cp.addEventListener("click", async () => {
@@ -1350,17 +1382,92 @@ function renderResult(r, pl) {
   });
 }
 
+/* =====================================================================
+   ステップ形式のコーチ（v7.1）
+   - 「コーチを始める」で 1 回目を分析 → 問いが 1 つずつ表示される
+   - 回答欄に答えて「答えて文面を更新」→ これまでの問いと回答（answers）を付けて再分析し、文面を更新する
+   - 「この問いはとばす」は AI を呼ばずに次の問いへ（次の分析時に「とばした」ことを AI に伝える）
+   - answers は GAS（v7.1 以降）がプロンプトの {{ANSWERS}} に差し込む
+===================================================================== */
+function resetCoach() { S.coach.answers = []; S.coach.queue = []; }
+function coachAnswersText(list) {
+  return (list || []).map((x, i) => `Q${i + 1}: ${x.q}\nA${i + 1}: ${x.a}`).join("\n");
+}
+function renderCoach() {
+  const box = $("coachBox"), C = S.coach;
+  if (!box || !C.last) return;
+  const { r, pl } = C.last;
+  const rw = r.rewrite || {}, d = r.diagnosis || {};
+  const text = rw.text || pl.beforeText || "";
+  const q = C.queue[0] || "";
+  const hasBlank = /【[^】]*】/.test(text);
+  const html = esc(text).replace(/【[^】]*】/g, m => `<mark class="blank">${m}</mark>`);
+  // 診断の先頭「誰△ 何○（写真） なぜ× …」から 5W1H のチェック状況を取り出す
+  const W = [["何", "何を"], ["なぜ", "なぜ"], ["誰", "誰と"], ["どう", "どう変わった"], ["いつ", "いつ"], ["どこ", "どこで"]];
+  const mk = {};
+  String(d.summary || "").replace(/(なぜ|何|誰|どう|いつ|どこ)\s*([○△×])(（写真）)?/g, (m, k, v, ph) => { if (!(k in mk)) mk[k] = { v, ph: !!ph }; return m; });
+  const CLS = { "○": "ok", "△": "mid", "×": "ng" };
+  const chips = W.filter(([k]) => mk[k]).map(([k, lb]) => `<span class="w5c ${CLS[mk[k].v]}">${lb}<b>${mk[k].v}</b>${mk[k].ph ? "<em>写真</em>" : ""}</span>`).join("");
+  const answered = C.answers.filter(x => !x.skip).length;
+  box.innerHTML = `
+    <div class="coach">
+      <div class="coach-hd"><span class="coach-step">STEP ${C.answers.length + 1}</span><b>${q ? "問いに答えて、文面を育てましょう" : "仕上げ"}</b></div>
+      ${r.headline ? `<div class="coach-head">${esc(r.headline)}</div>` : ""}
+      ${chips ? `<div class="w5">${chips}</div>` : ""}
+      <div class="coach-text">
+        <small>今の文面${answered ? `（あなたの回答 ${answered} 件を反映）` : ""}<button type="button" class="copy" id="coachCopy">コピー</button></small>
+        <p>${html}</p>
+        ${hasBlank ? `<div class="rw-hint">※ 黄色の【 】は、問いに答えると埋まります（自分で書き換えても大丈夫です）。</div>` : ""}
+      </div>
+      ${q ? `
+      <div class="coach-q">
+        <div class="coach-qt"><i>Q</i><span>${esc(q)}</span></div>
+        <textarea class="ta" id="coachAns" rows="3" maxlength="150" placeholder="思ったままの言葉で、短くて大丈夫です（Ctrl+Enter で送信）"></textarea>
+        <div class="coach-acts">
+          <button type="button" class="btn" id="coachSend">答えて文面を更新</button>
+          <button type="button" class="btn ghost sm" id="coachSkip">この問いはとばす</button>
+        </div>
+      </div>` : `
+      <div class="coach-done">${hasBlank ? "問いはここまでです。【 】を自分の言葉で埋めて仕上げましょう。" : "できあがりです！「コピー」して DROP に投稿しましょう。"}</div>`}
+      ${C.answers.length ? `<details class="coach-log"><summary>これまでの回答（${C.answers.length}）</summary>${C.answers.map((x, i) => `<div><b>Q${i + 1}</b>${esc(x.q)}<br><b>A</b>${esc(x.a)}</div>`).join("")}</details>` : ""}
+    </div>`;
+  const cp = $("coachCopy");
+  cp.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text); cp.textContent = "コピーしました"; }
+    catch (e) { cp.textContent = "コピー失敗"; }
+    setTimeout(() => (cp.textContent = "コピー"), 1600);
+  });
+  if (!q) return;
+  const send = () => {
+    if (S.busy) return;
+    const a = $("coachAns").value.replace(/\s+/g, " ").trim();
+    if (!a) { $("coachAns").focus(); return; }
+    // 送信に失敗して同じ問いにもう一度答えた場合は、回答を置き換える
+    const last = C.answers[C.answers.length - 1];
+    if (last && last.q === q && !last.skip) last.a = a; else C.answers.push({ q, a });
+    S.retried = false; run(false);
+  };
+  $("coachSend").addEventListener("click", send);
+  $("coachAns").addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } });
+  $("coachSkip").addEventListener("click", () => {
+    if (S.busy) return;
+    C.answers.push({ q, a: "（とばした）", skip: true });
+    C.queue.shift();
+    renderCoach();
+  });
+}
+
 /* 条件が表示中の結果と違えば知らせる（自動実行はしない） */
 function checkStale() {
   syncRunNote();
   if (!S.lastKey || S.busy || S.step !== 2 || !canAnalyze()) return;
   const stale = buildPayload().key !== S.lastKey;
   $("runBtn").classList.toggle("stale", stale);
-  if (stale) status("条件が変わりました。表示中の提案は以前の条件のものです。「改善案を生成」で更新してください。", "stale");
+  if (stale) status("条件が変わりました。表示中の提案は以前の条件のものです。「コーチを始める」でやり直してください。", "stale");
   else if ($("status").classList.contains("stale")) status("");
 }
 
-$("runBtn").addEventListener("click", () => { S.retried = false; run(false); });
+$("runBtn").addEventListener("click", () => { S.retried = false; resetCoach(); run(false); });
 /* スマホ：実行パネルが画面外のときだけ下部に実行ボタンを出す */
 S.vis = { run: false, result: false };
 function syncRunDock() {
@@ -1375,7 +1482,7 @@ if ("IntersectionObserver" in window) {
 }
 $("runBtn2").addEventListener("click", () => {
   $("runPanel").scrollIntoView({ behavior: "smooth", block: "center" });
-  S.retried = false; run(false);
+  S.retried = false; resetCoach(); run(false);
 });
 $("forceBtn").addEventListener("click", () => { S.retried = false; run(true); });
 $("logoutBtn").addEventListener("click", () => { clearTokens(); clearPw(); $("lPw").value = ""; status("ログアウトしました（保存したパスワードも削除しました）"); });
